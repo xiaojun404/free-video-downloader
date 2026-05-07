@@ -66,7 +66,7 @@ def init_db():
         """)
 
 
-FREE_DAILY_SUMMARY_LIMIT = 3
+FREE_DAILY_SUMMARY_LIMIT = int(os.getenv("FREE_DAILY_SUMMARY_LIMIT", "3"))
 
 
 def get_user_by_email(email: str) -> dict | None:

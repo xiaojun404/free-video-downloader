@@ -345,6 +345,14 @@ watch(mindmapMarkdown, async (val) => {
   }
 })
 
+// 切换到思维导图 tab 时重新渲染（解决 v-show 隐藏时容器尺寸为 0 导致 NaN 的问题）
+watch(activeTab, async (tab) => {
+  if (tab === 'mindmap' && mindmapMarkdown.value) {
+    await nextTick()
+    renderMindmap(mindmapMarkdown.value)
+  }
+})
+
 function renderMarkdown(text) {
   if (!text) return ''
   return marked.parse(text)

@@ -46,10 +46,23 @@ class SubtitleExtractor:
 
         lang, sub_url, sub_type = self._pick_best_subtitle(manual_subs, auto_subs)
         if not sub_url:
+            desc = info.get("description", "") or info.get("title", "")
+            if desc:
+                sentences = re.split(r"[。！？\n]+", desc)
+                segments = [{"start": i * 5.0, "end": i * 5.0 + 5.0, "text": s.strip()} for i, s in enumerate(sentences) if s.strip()]
+                return {
+                    "has_subtitle": True,
+                    "language": "zh",
+                    "subtitle_type": "auto",
+                    "source": "description",
+                    "segments": segments,
+                    "full_text": desc,
+                }
             return {
                 "has_subtitle": False,
                 "language": "",
                 "subtitle_type": "none",
+                "source": "none",
                 "segments": [],
                 "full_text": "",
             }
@@ -62,6 +75,7 @@ class SubtitleExtractor:
             "has_subtitle": True,
             "language": lang,
             "subtitle_type": sub_type,
+            "source": "subtitle",
             "segments": segments,
             "full_text": full_text,
         }
@@ -70,7 +84,7 @@ class SubtitleExtractor:
         """B 站专用字幕提取（通过 dm/view API 获取 CC 字幕和 AI 字幕）"""
         empty = {
             "has_subtitle": False, "language": "", "subtitle_type": "none",
-            "segments": [], "full_text": "",
+            "source": "none", "segments": [], "full_text": "",
         }
         try:
             bvid = self._parse_bvid(url)
@@ -140,6 +154,7 @@ class SubtitleExtractor:
                 "has_subtitle": True,
                 "language": best.get("lan", "zh"),
                 "subtitle_type": sub_type,
+                "source": "subtitle",
                 "segments": segments,
                 "full_text": full_text,
             }
@@ -152,6 +167,13 @@ class SubtitleExtractor:
         return m.group(1) if m else None
 
     def _get_video_info(self, url: str) -> dict:
+        from douyin import is_douyin_url
+        from kuaishou import is_kuaishou_url
+        if is_douyin_url(url):
+            return self._get_douyin_video_info(url)
+        if is_kuaishou_url(url):
+            return self._get_kuaishou_video_info(url)
+
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -166,6 +188,79 @@ class SubtitleExtractor:
         if not info:
             raise ValueError("无法解析该视频链接")
         return info
+
+    @staticmethod
+    def _get_douyin_video_info(url: str) -> dict:
+        import tempfile
+        from douyin import DouyinParser
+        parser = DouyinParser()
+        parsed = parser.parse(url)
+        video_id = parsed.get("id", "")
+        desc = parsed.get("description", "") or parsed.get("title", "")
+
+        # 将 parser 的 session cookies 写入临时文件，传给 yt-dlp
+        cookie_file = None
+        try:
+            cookies = parser.session.cookies
+            if cookies:
+                fd, cookie_file = tempfile.mkstemp(suffix=".txt", prefix="douyin_cookies_")
+                with open(fd, "w", encoding="utf-8") as f:
+                    f.write("# Netscape HTTP Cookie File\n\n")
+                    for cookie in cookies:
+                        domain = cookie.domain or ""
+                        flag = "TRUE" if domain.startswith(".") else "FALSE"
+                        path = cookie.path or "/"
+                        secure = "TRUE" if cookie.secure else "FALSE"
+                        expires = str(int(cookie.expires)) if cookie.expires else "0"
+                        f.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{cookie.name}\t{cookie.value}\n")
+
+            standard_url = f"https://www.douyin.com/video/{video_id}"
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "extract_flat": False,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "skip_download": True,
+            }
+            if cookie_file:
+                ydl_opts["cookiefile"] = cookie_file
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(standard_url, download=False)
+            if info:
+                info["description"] = desc
+                return info
+        except Exception:
+            pass
+        finally:
+            if cookie_file:
+                try:
+                    os.unlink(cookie_file)
+                except OSError:
+                    pass
+
+        return {
+            "title": parsed.get("title", ""),
+            "description": desc,
+            "subtitles": parsed.get("subtitles", {}),
+            "automatic_captions": parsed.get("automatic_captions", {}),
+        }
+
+    @staticmethod
+    def _get_kuaishou_video_info(url: str) -> dict:
+        """从快手页面提取视频信息（非 yt-dlp 路径）"""
+        from kuaishou import KuaishouParser
+        parser = KuaishouParser()
+        parsed = parser.parse(url)
+        desc = parsed.get("description", "") or parsed.get("title", "")
+        return {
+            "title": parsed.get("title", ""),
+            "description": desc,
+            "subtitles": {},
+            "automatic_captions": {},
+        }
 
     def _pick_best_subtitle(
         self, manual_subs: dict, auto_subs: dict

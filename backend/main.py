@@ -14,11 +14,13 @@ from pydantic import BaseModel
 
 from downloader import VideoDownloader
 from douyin import DouyinParser, is_douyin_url
+from kuaishou import KuaishouParser, is_kuaishou_url
 from database import init_db
 
 
 downloader = VideoDownloader()
 douyin_parser = DouyinParser(download_dir=downloader.DOWNLOAD_DIR)
+kuaishou_parser = KuaishouParser(download_dir=downloader.DOWNLOAD_DIR)
 
 
 @asynccontextmanager
@@ -66,11 +68,13 @@ async def health_check():
 
 @app.post("/api/parse")
 async def parse_video(req: ParseRequest):
-    """解析视频信息（抖音走专用模块，其他走 yt-dlp）"""
+    """解析视频信息（抖音/快手走专用模块，其他走 yt-dlp）"""
     try:
         loop = asyncio.get_event_loop()
         if is_douyin_url(req.url):
             result = await loop.run_in_executor(None, douyin_parser.parse, req.url)
+        elif is_kuaishou_url(req.url):
+            result = await loop.run_in_executor(None, kuaishou_parser.parse, req.url)
         else:
             result = await loop.run_in_executor(None, downloader.parse_video, req.url)
         return {"success": True, "data": result}
@@ -83,11 +87,17 @@ async def parse_video(req: ParseRequest):
 
 @app.post("/api/download")
 async def download_video(req: DownloadRequest):
-    """服务端下载视频后提供文件下载（抖音走专用模块）"""
+    """服务端下载视频后提供文件下载（抖音/快手走专用模块）"""
     try:
         loop = asyncio.get_event_loop()
         if is_douyin_url(req.url):
-            result = await loop.run_in_executor(None, douyin_parser.download, req.url)
+            result = await loop.run_in_executor(
+                None, douyin_parser.download, req.url, req.format_id
+            )
+        elif is_kuaishou_url(req.url):
+            result = await loop.run_in_executor(
+                None, kuaishou_parser.download, req.url, req.format_id
+            )
         else:
             result = await loop.run_in_executor(
                 None, downloader.download_video, req.url, req.format_id

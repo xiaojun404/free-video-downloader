@@ -9,6 +9,8 @@ import json
 import hashlib
 import os
 import re
+import subprocess
+import tempfile
 import time
 import logging
 from pathlib import Path
@@ -79,25 +81,51 @@ class DouyinParser:
         item_info = self._fetch_item_info(video_id, resolved_url)
         return self._build_result(item_info, video_id)
 
-    def download(self, url: str, mode: str = "video") -> dict:
-        """下载抖音视频，返回文件路径"""
+    def download(self, url: str, format_id: str = "") -> dict:
+        """下载抖音视频，返回文件路径。format_id: douyin_1080p/douyin_720p/.../douyin_mp3"""
         share_url = self._extract_url(url)
         resolved_url = self._resolve_redirect(share_url)
         video_id = self._extract_video_id(resolved_url)
 
         item_info = self._fetch_item_info(video_id, resolved_url)
-        media_url = self._get_media_url(item_info, mode)
         title = item_info.get("desc") or f"douyin_{video_id}"
         safe_title = re.sub(r'[\\/*?:"<>|\n\r\t#@]', "_", title).strip("_. ")[:60]
         safe_title = re.sub(r'_+', '_', safe_title)
         if not safe_title:
             safe_title = f"douyin_{video_id}"
 
-        ext = ".mp4" if mode == "video" else ".mp3"
-        filename = f"{safe_title}{ext}"
-        filepath = self.download_dir / filename
+        is_audio = format_id == "douyin_mp3"
 
-        self._download_file(media_url, filepath)
+        if is_audio:
+            video_url = self._get_media_url(item_info, "video")
+            # 按指定的 ratio 构造下载 URL
+            fd, temp_video = tempfile.mkstemp(suffix=".mp4", prefix="douyin_video_")
+            os.close(fd)
+            try:
+                self._download_file(video_url, Path(temp_video))
+                ext = ".mp3"
+                filename = f"{safe_title}{ext}"
+                filepath = self.download_dir / filename
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", temp_video,
+                    "-vn", "-acodec", "libmp3lame", "-q:a", "2",
+                    str(filepath)
+                ], check=True, capture_output=True)
+            finally:
+                try:
+                    os.unlink(temp_video)
+                except OSError:
+                    pass
+        else:
+            # 根据 format_id 解析 ratio，构造对应清晰度的 URL
+            video_url = self._get_media_url(item_info, "video")
+            if format_id and format_id.startswith("douyin_"):
+                ratio = format_id.replace("douyin_", "")
+                video_url = re.sub(r'ratio=\w+', f'ratio={ratio}', video_url)
+            ext = ".mp4"
+            filename = f"{safe_title}{ext}"
+            filepath = self.download_dir / filename
+            self._download_file(video_url, filepath)
 
         return {
             "filepath": str(filepath),
@@ -299,11 +327,15 @@ class DouyinParser:
             return play_urls[0].replace("playwm", "play")
 
         if mode == "audio":
-            music = item_info.get("music", {})
-            audio_urls = music.get("play_url", {}).get("url_list", [])
-            if not audio_urls:
-                raise ValueError("未找到音频地址")
-            return audio_urls[0]
+            # 抖音分享页 API 不提供音频直链，返回视频 URL，由 download() 中用 ffmpeg 提取音频
+            play_urls = (
+                item_info.get("video", {})
+                .get("play_addr", {})
+                .get("url_list", [])
+            )
+            if not play_urls:
+                raise ValueError("未找到视频播放地址")
+            return play_urls[0].replace("playwm", "play")
 
         raise ValueError(f"不支持的模式: {mode}")
 
@@ -318,24 +350,71 @@ class DouyinParser:
         cover_urls = video_info.get("cover", {}).get("url_list", [])
         duration = video_info.get("duration", 0)
         duration_sec = duration // 1000 if duration > 1000 else duration
+        width = video_info.get("width", 0)
+        height = video_info.get("height", 0)
+
+        # 从接口返回的 URL 中提取实际 ratio，以此为上限
+        default_ratio = "720p"
+        if play_urls:
+            ratio_match = re.search(r'ratio=(\d+)p?', play_urls[0])
+            if ratio_match:
+                default_ratio = f"{ratio_match.group(1)}p"
+
+        # 所有可选清晰度，按从高到低排列
+        all_ratios = [
+            ("1080p", 1080, "1080P 高清"),
+            ("720p", 720, "720P 标清"),
+            ("540p", 540, "540P 流畅"),
+            ("480p", 480, "480P 省流"),
+        ]
+        # 只保留不高于接口返回 ratio 的选项
+        default_ratio_h = int(default_ratio.rstrip("p"))
+        available_ratios = [(r, h, l) for r, h, l in all_ratios if h <= default_ratio_h]
 
         formats = []
         if play_urls:
-            clean_url = play_urls[0].replace("playwm", "play")
-            width = video_info.get("width", 0)
-            height = video_info.get("height", 0)
+            base_url = play_urls[0].replace("playwm", "play")
+            for ratio, target_h, label_suffix in available_ratios:
+                variant_url = re.sub(r'ratio=\w+', f'ratio={ratio}', base_url)
+                if variant_url == base_url:
+                    variant_url = base_url + (f'&ratio={ratio}' if '?' in base_url else f'?ratio={ratio}')
+                # 按比例计算对应清晰度的实际尺寸
+                if width and height:
+                    scale = target_h / height
+                    fmt_width = round(width * scale)
+                    fmt_height = target_h
+                else:
+                    fmt_width = 0
+                    fmt_height = target_h
+                formats.append({
+                    "format_id": f"douyin_{ratio}",
+                    "ext": "mp4",
+                    "resolution": f"{fmt_width}x{fmt_height}" if fmt_width else f"auto",
+                    "height": fmt_height,
+                    "filesize": None,
+                    "filesize_approx": None,
+                    "vcodec": "h264",
+                    "acodec": "aac",
+                    "has_audio": True,
+                    "label": f"无水印 {label_suffix}",
+                    "_direct_url": variant_url,
+                })
+
+        # MP3 音频（从视频中提取，不需要独立音频链接）
+        if play_urls:
             formats.append({
-                "format_id": "douyin_nowm",
-                "ext": "mp4",
-                "resolution": f"{width}x{height}" if width and height else "原始",
-                "height": height or 720,
+                "format_id": "douyin_mp3",
+                "ext": "mp3",
+                "resolution": "audio only",
+                "height": 0,
                 "filesize": None,
                 "filesize_approx": None,
-                "vcodec": "h264",
-                "acodec": "aac",
+                "vcodec": "none",
+                "acodec": "mp3",
                 "has_audio": True,
-                "label": f"无水印 MP4 ({height}p)" if height else "无水印 MP4 (原始画质)",
-                "_direct_url": clean_url,
+                "has_video": False,
+                "label": "MP3 音频",
+                "_direct_url": "",
             })
 
         return {
@@ -348,11 +427,41 @@ class DouyinParser:
             "platform": "抖音",
             "view_count": stats.get("play_count") or stats.get("digg_count"),
             "upload_date": "",
-            "description": title[:200],
+            "description": title,
             "formats": formats,
-            "subtitles": [],
-            "automatic_captions": [],
+            "subtitles": self._extract_subtitles(item_info),
+            "automatic_captions": self._extract_auto_subtitles(item_info),
         }
+
+    def _extract_subtitles(self, item_info: dict) -> dict:
+        """从 item_info 中提取人工字幕，返回 yt-dlp 兼容格式 {lang: [{url, ext}]}"""
+        result = {}
+        video = item_info.get("video", {}) or {}
+        subtitle_data = video.get("subtitle") or video.get("subtitles") or {}
+        if isinstance(subtitle_data, list):
+            subtitle_data = {}
+        for lang, tracks in subtitle_data.items():
+            if isinstance(tracks, list) and tracks:
+                result[lang] = [
+                    {"url": t.get("url", ""), "ext": t.get("format", "vtt")}
+                    for t in tracks if t.get("url")
+                ]
+        return result
+
+    def _extract_auto_subtitles(self, item_info: dict) -> dict:
+        """从 item_info 中提取 AI 自动字幕，返回 yt-dlp 兼容格式"""
+        result = {}
+        video = item_info.get("video", {}) or {}
+        auto_data = video.get("auto_subtitle") or video.get("ai_subtitle") or {}
+        if isinstance(auto_data, list):
+            auto_data = {}
+        for lang, tracks in auto_data.items():
+            if isinstance(tracks, list) and tracks:
+                result[lang] = [
+                    {"url": t.get("url", ""), "ext": t.get("format", "vtt")}
+                    for t in tracks if t.get("url")
+                ]
+        return result
 
     @staticmethod
     def _fmt_duration(seconds: Optional[int]) -> str:
