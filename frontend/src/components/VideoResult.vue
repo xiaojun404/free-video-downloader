@@ -3,20 +3,63 @@
     <!-- 视频信息头部 -->
     <div class="flex flex-col gap-5 p-5 sm:p-6">
       <div class="relative w-full aspect-video rounded-xl overflow-hidden bg-gray-100">
-        <img
-          v-if="video.thumbnail"
-          :src="thumbnailUrl"
-          :alt="video.title"
-          class="w-full h-full object-cover"
-          @error="(e) => e.target.style.display = 'none'"
-        />
-        <div v-else class="w-full h-full flex items-center justify-center text-text-muted">
-          <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-              d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+        <!-- 视频播放器 -->
+        <video
+          v-if="showPlayer"
+          ref="videoPlayer"
+          :src="playUrl"
+          class="w-full h-full object-contain bg-black"
+          controls
+          autoplay
+          playsinline
+          @error="handlePlayError"
+        ></video>
+        <!-- 缩略图 -->
+        <template v-else>
+          <img
+            v-if="video.thumbnail"
+            :src="thumbnailUrl"
+            :alt="video.title"
+            class="w-full h-full object-cover"
+            @error="(e) => e.target.style.display = 'none'"
+          />
+          <div v-else class="w-full h-full flex items-center justify-center text-text-muted">
+            <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <!-- 播放按钮浮层 -->
+          <button
+            @click="playVideo"
+            :disabled="loadingPlayUrl"
+            class="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/35 transition-colors group cursor-pointer"
+          >
+            <div v-if="loadingPlayUrl" class="w-14 h-14 rounded-full bg-primary/90 flex items-center justify-center">
+              <svg class="animate-spin w-7 h-7 text-white" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </div>
+            <div v-else class="w-14 h-14 rounded-full bg-primary/90 flex items-center justify-center group-hover:scale-110 transition-transform shadow-lg">
+              <svg class="w-7 h-7 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </div>
+          </button>
+        </template>
+        <!-- 关闭播放器 -->
+        <button
+          v-if="showPlayer"
+          @click="closePlayer"
+          class="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors cursor-pointer z-10"
+          title="关闭播放器"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
           </svg>
-        </div>
-        <div v-if="video.duration_string" class="absolute bottom-2 right-2 px-2 py-0.5 bg-black/70 text-white text-xs rounded-md">
+        </button>
+        <div v-if="video.duration_string && !showPlayer" class="absolute bottom-2 right-2 px-2 py-0.5 bg-black/70 text-white text-xs rounded-md">
           {{ video.duration_string }}
         </div>
       </div>
@@ -102,6 +145,33 @@
           </svg>
           {{ downloading ? '下载中，请稍候...' : '立即下载' }}
         </button>
+        <!-- 在线播放按钮 -->
+        <button
+          v-if="!showPlayer"
+          @click="playVideo"
+          :disabled="loadingPlayUrl"
+          class="w-full inline-flex items-center justify-center gap-2 h-12 px-8 rounded-full border-2 border-green-500 text-green-600 hover:bg-green-500 hover:text-white font-medium text-base transition-all shadow-sm hover:shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <svg v-if="loadingPlayUrl" class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <svg v-else class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+          {{ loadingPlayUrl ? '加载中...' : '在线播放' }}
+        </button>
+        <!-- 关闭播放器按钮 -->
+        <button
+          v-else
+          @click="closePlayer"
+          class="w-full inline-flex items-center justify-center gap-2 h-12 px-8 rounded-full border-2 border-red-400 text-red-500 hover:bg-red-500 hover:text-white font-medium text-base transition-all shadow-sm hover:shadow-md cursor-pointer"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+          关闭播放器
+        </button>
         <!-- AI 总结按钮（重新总结） -->
         <button
           @click="$emit('summarize')"
@@ -128,9 +198,11 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { getDirectUrl } from '../api/video.js'
 
 const props = defineProps({
   video: { type: Object, required: true },
+  videoUrl: { type: String, default: '' },
   downloading: Boolean,
   summarizing: Boolean,
 })
@@ -144,6 +216,43 @@ const thumbnailUrl = computed(() => {
 const selectedFormat = ref(
   props.video.formats?.length > 0 ? props.video.formats[0].format_id : ''
 )
+
+// 在线播放状态
+const showPlayer = ref(false)
+const playUrl = ref('')
+const loadingPlayUrl = ref(false)
+const videoPlayer = ref(null)
+
+async function playVideo() {
+  loadingPlayUrl.value = true
+  try {
+    const fmt = props.video.formats?.find(f => f.format_id === selectedFormat.value)
+    let directUrl = ''
+    if (fmt?._direct_url) {
+      directUrl = fmt._direct_url
+    } else {
+      const res = await getDirectUrl(props.videoUrl, selectedFormat.value)
+      if (!res.success) throw new Error(res.error || '获取播放地址失败')
+      directUrl = res.data.direct_url
+    }
+    if (!directUrl) throw new Error('该视频暂不支持在线播放')
+    playUrl.value = '/api/stream?url=' + encodeURIComponent(directUrl)
+    showPlayer.value = true
+  } catch (err) {
+    alert('在线播放失败：' + (err.response?.data?.detail?.error || err.response?.data?.detail || err.message || '请稍后重试'))
+  } finally {
+    loadingPlayUrl.value = false
+  }
+}
+
+function closePlayer() {
+  showPlayer.value = false
+  playUrl.value = ''
+}
+
+function handlePlayError() {
+  alert('视频加载失败，可能是链接已过期，请尝试重新解析或下载观看')
+}
 
 function getSelectedLabel() {
   const fmt = props.video.formats?.find(f => f.format_id === selectedFormat.value)

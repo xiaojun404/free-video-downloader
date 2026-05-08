@@ -247,20 +247,45 @@ query visionVideoDetail($photoId: String, $type: String) {
 
     def _fetch_item_info(self, share_url: str, video_id: str, needs_redirect: bool) -> dict:
         """获取视频元数据。
-        优先用干净 session 直接调 GraphQL API（避免页面请求触发反爬），
-        失败则解析页面 HTML。
+        策略1: 移动端 m.gifshow.com/fw/photo/ 页面（最稳定，无需 cookie）
+        策略2: GraphQL API
+        策略3: PC/Mobile 页面解析
         """
-        # 策略1: GraphQL API（用独立 session，不携带页面 cookie）
+        # 策略1: 移动端 photo 页面（最稳定，反爬最弱）
+        try:
+            return self._fetch_via_mobile_photo(video_id)
+        except Exception as e:
+            logger.warning("移动端 photo 页面获取失败(%s)，尝试 GraphQL API", e)
+
+        # 策略2: GraphQL API
         try:
             return self._fetch_via_graphql(video_id)
         except Exception as e:
             logger.warning("GraphQL API 获取失败(%s)，尝试页面解析", e)
 
-        # 策略2: 页面解析（需先解析重定向拿到完整 URL）
+        # 策略3: 页面解析
         resolved_url = self._resolve_redirect(share_url) if needs_redirect else share_url
         if needs_redirect:
             video_id = self._extract_video_id(resolved_url)
         return self._fetch_via_page(video_id, resolved_url)
+
+    def _fetch_via_mobile_photo(self, photo_id: str) -> dict:
+        """通过 m.gifshow.com/fw/photo/ 页面获取视频数据（无需 cookie，反爬最弱）"""
+        url = f"https://m.gifshow.com/fw/photo/{photo_id}"
+        resp = self.session.get(url, headers=MOBILE_HEADERS, timeout=self.timeout, allow_redirects=True)
+        resp.raise_for_status()
+        html = resp.text or ""
+
+        if "INIT_STATE" in html:
+            try:
+                init_data = self._extract_init_state(html)
+                item = self._parse_init_item(init_data, photo_id)
+                if item:
+                    return item
+            except Exception:
+                pass
+
+        raise ValueError("移动端 photo 页面未找到视频数据")
 
     def _fetch_via_graphql(self, photo_id: str) -> dict:
         """通过 GraphQL API 获取视频详情（使用独立 session，避免页面 cookie 触发反爬）"""
@@ -587,6 +612,12 @@ query visionVideoDetail($photoId: String, $type: String) {
     def _parse_init_item(init_data: dict, video_id: str) -> Optional[dict]:
         """从 INIT_STATE 数据中提取视频信息"""
         for key, value in init_data.items():
+            # 新格式：photo 直接在 dict value 中
+            if isinstance(value, dict) and "photo" in value:
+                photo = value["photo"]
+                if isinstance(photo, dict) and (photo.get("photoUrl") or photo.get("mainMvUrls")):
+                    return KuaishouParser._normalize_photo_data(value)
+
             if not isinstance(value, str):
                 continue
             try:
@@ -604,6 +635,41 @@ query visionVideoDetail($photoId: String, $type: String) {
                 return KuaishouParser._normalize_vision_detail(response)
 
         return None
+
+    @staticmethod
+    def _normalize_photo_data(data: dict) -> dict:
+        """从新格式的 INIT_STATE photo 数据归一化（适配 m.gifshow.com 页面结构）"""
+        photo = data.get("photo", {})
+        counts = data.get("counts", {}) or {}
+
+        # mainMvUrls: [{cdn, url}, ...] → 取第一个 url
+        mv_urls = photo.get("mainMvUrls", [])
+        photo_url = mv_urls[0]["url"] if mv_urls else ""
+
+        # coverUrls: [{cdn, url}, ...]
+        cover_urls = photo.get("coverUrls", [])
+        cover_url = cover_urls[0]["url"] if cover_urls else ""
+
+        # manifest: adaptationSet
+        manifest = photo.get("manifest", {})
+
+        return {
+            "id": photo.get("photoId", ""),
+            "caption": photo.get("caption", ""),
+            "duration": photo.get("duration", 0),
+            "coverUrl": cover_url,
+            "photoUrl": photo_url,
+            "likeCount": photo.get("likeCount", ""),
+            "viewCount": photo.get("viewCount", ""),
+            "width": photo.get("width", 0),
+            "height": photo.get("height", 0),
+            "author": {
+                "id": photo.get("userId", ""),
+                "name": photo.get("userName", ""),
+                "headerUrl": photo.get("headUrl", ""),
+            },
+            "manifest": manifest,
+        }
 
     # ── 构建结果 ─────────────────────────────────────────────
 

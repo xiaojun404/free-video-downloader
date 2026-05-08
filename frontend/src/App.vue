@@ -22,6 +22,7 @@
             <div class="w-full lg:w-2/5 lg:flex-shrink-0">
               <VideoResult
                 :video="videoData"
+                :videoUrl="currentUrl"
                 :downloading="downloading"
                 :summarizing="summarizing"
                 @download="handleDownload"

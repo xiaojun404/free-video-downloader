@@ -373,17 +373,65 @@ class SubtitleExtractor:
 
 
 class VideoSummarizer:
-    """使用 DeepSeek API 生成视频总结、思维导图、问答"""
+    """多模型 AI 总结器，支持智谱 / DeepSeek / Groq"""
 
-    def __init__(self):
-        api_key = os.getenv("DEEPSEEK_API_KEY", "")
-        if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY 环境变量未设置")
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.deepseek.com",
-        )
-        self.model = "deepseek-chat"
+    PROVIDERS = {
+        "zhipu": {
+            "name": "智谱 GLM-4-Flash",
+            "base_url": "https://open.bigmodel.cn/api/paas/v4/",
+            "env_key": "ZHIPU_API_KEY",
+            "default_model": "glm-4-flash",
+        },
+        "deepseek": {
+            "name": "DeepSeek V3",
+            "base_url": "https://api.deepseek.com",
+            "env_key": "DEEPSEEK_API_KEY",
+            "default_model": "deepseek-chat",
+        },
+        "groq": {
+            "name": "Groq Qwen 2.5 32B",
+            "base_url": "https://api.groq.com/openai/v1",
+            "env_key": "GROQ_API_KEY",
+            "default_model": "qwen-2.5-32b",
+        },
+    }
+
+    @classmethod
+    def get_available_providers(cls) -> list[dict]:
+        """返回所有已配置 API Key 的可用模型列表"""
+        available = []
+        for key, cfg in cls.PROVIDERS.items():
+            if os.getenv(cfg["env_key"], ""):
+                available.append({
+                    "key": key,
+                    "name": cfg["name"],
+                    "model": cfg["default_model"],
+                })
+        if not available:
+            raise ValueError("没有配置任何可用的 AI 模型 API Key，请在 .env 中至少配置一个")
+        return available
+
+    @classmethod
+    def get_default_provider(cls) -> str:
+        """默认优先级: 智谱 > DeepSeek > Groq"""
+        available = cls.get_available_providers()
+        return available[0]["key"]
+
+    def __init__(self, provider: str | None = None):
+        if provider and provider in self.PROVIDERS:
+            cfg = self.PROVIDERS[provider]
+            api_key = os.getenv(cfg["env_key"], "")
+            if not api_key:
+                provider = None
+
+        if not provider:
+            provider = self.get_default_provider()
+            cfg = self.PROVIDERS[provider]
+            api_key = os.getenv(cfg["env_key"], "")
+
+        self.provider = provider
+        self.client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
+        self.model = cfg["default_model"]
 
     def summarize_stream(self, subtitle_text: str, language: str = "zh"):
         """流式生成视频总结，yield 每个 token"""

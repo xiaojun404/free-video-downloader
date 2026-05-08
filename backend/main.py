@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -154,6 +154,49 @@ async def proxy_thumbnail(url: str = Query(..., description="缩略图URL")):
             )
     except Exception:
         raise HTTPException(status_code=502, detail="缩略图加载失败")
+
+
+@app.get("/api/stream")
+async def stream_video(url: str = Query(..., description="视频直链URL"), request: Request = None):
+    """代理视频流，支持 Range 请求以实现拖拽进度条"""
+    range_header = request.headers.get("range", "") if request else ""
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": url,
+    }
+    if range_header:
+        req_headers["Range"] = range_header
+
+    client = httpx.AsyncClient(timeout=300, follow_redirects=True)
+    req = client.build_request("GET", url, headers=req_headers)
+    upstream = await client.send(req, stream=True)
+
+    content_type = upstream.headers.get("content-type", "video/mp4")
+    content_length = upstream.headers.get("content-length", "0")
+    response_headers = {
+        "Content-Type": content_type,
+        "Accept-Ranges": "bytes",
+        "Content-Length": content_length,
+    }
+
+    status_code = upstream.status_code
+    if status_code == 206 and "content-range" in upstream.headers:
+        response_headers["Content-Range"] = upstream.headers["content-range"]
+
+    async def chunk_generator():
+        try:
+            async for chunk in upstream.aiter_bytes(8192):
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        chunk_generator(),
+        status_code=status_code,
+        headers=response_headers,
+        media_type=content_type,
+    )
 
 
 # 挂载功能模块路由

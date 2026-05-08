@@ -64,11 +64,11 @@ function authHeaders() {
   return headers
 }
 
-export async function summarizeVideo(url, language = 'zh', callbacks = {}) {
+export async function summarizeVideo(url, language = 'zh', callbacks = {}, model = '') {
   const response = await fetch('/api/summarize', {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ url, language }),
+    body: JSON.stringify({ url, language, model }),
   })
 
   if (!response.ok) {
@@ -78,11 +78,11 @@ export async function summarizeVideo(url, language = 'zh', callbacks = {}) {
   await handleSSEStream(response, callbacks)
 }
 
-export async function chatWithVideo(url, question, subtitleText = '', callbacks = {}) {
+export async function chatWithVideo(url, question, subtitleText = '', callbacks = {}, model = '') {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ url, question, subtitle_text: subtitleText }),
+    body: JSON.stringify({ url, question, subtitle_text: subtitleText, model }),
   })
 
   if (!response.ok) {
@@ -90,4 +90,11 @@ export async function chatWithVideo(url, question, subtitleText = '', callbacks 
   }
 
   await handleSSEStream(response, callbacks)
+}
+
+export async function fetchModels() {
+  const response = await fetch('/api/models')
+  const data = await response.json()
+  if (!data.success) throw new Error(data.detail || '获取模型列表失败')
+  return data.data
 }

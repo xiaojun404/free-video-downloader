@@ -17,12 +17,14 @@ router = APIRouter(prefix="/api", tags=["AI 总结"])
 class SummarizeRequest(BaseModel):
     url: str
     language: str = "zh"
+    model: str = ""  # 不传则自动选默认模型
 
 
 class ChatRequest(BaseModel):
     url: str
     question: str
     subtitle_text: str = ""
+    model: str = ""
 
 
 def _check_summary_permission(user: dict | None):
@@ -43,15 +45,13 @@ def _check_summary_permission(user: dict | None):
     return True, remaining, None
 
 
-def _get_summarizer():
-    """延迟初始化 VideoSummarizer（仅在首次调用时创建）"""
+def _create_summarizer(provider: str = ""):
+    """根据 provider 创建 VideoSummarizer 实例"""
     from summarizer import VideoSummarizer
-    if not hasattr(_get_summarizer, "_instance"):
-        try:
-            _get_summarizer._instance = VideoSummarizer()
-        except ValueError as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    return _get_summarizer._instance
+    try:
+        return VideoSummarizer(provider=provider or None)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _get_extractor():
@@ -60,6 +60,18 @@ def _get_extractor():
     if not hasattr(_get_extractor, "_instance"):
         _get_extractor._instance = SubtitleExtractor()
     return _get_extractor._instance
+
+
+@router.get("/models")
+async def list_models():
+    """返回所有可用的 AI 模型列表"""
+    from summarizer import VideoSummarizer
+    try:
+        available = VideoSummarizer.get_available_providers()
+        default = VideoSummarizer.get_default_provider()
+        return {"success": True, "data": {"models": available, "default": default}}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/summarize", response_class=EventSourceResponse)
@@ -96,7 +108,7 @@ async def summarize_video(req: SummarizeRequest, user: dict | None = Depends(get
             return
 
         full_text = subtitle_data["full_text"]
-        summarizer = _get_summarizer()
+        summarizer = _create_summarizer(req.model)
 
         for token in summarizer.summarize_stream(full_text, req.language):
             yield ServerSentEvent(raw_data=json.dumps(token, ensure_ascii=False), event="summary")
@@ -118,8 +130,11 @@ async def summarize_video(req: SummarizeRequest, user: dict | None = Depends(get
         yield ServerSentEvent(raw_data="[DONE]", event="done")
 
     except Exception as e:
+        err_msg = str(e)
+        if "Connection" in err_msg or "Connect" in err_msg or "Timeout" in err_msg:
+            err_msg = "大模型 API 网络调用不稳定，请稍后再试"
         yield ServerSentEvent(
-            raw_data=json.dumps({"message": f"总结失败: {str(e)}"}, ensure_ascii=False),
+            raw_data=json.dumps({"message": f"总结失败: {err_msg}"}, ensure_ascii=False),
             event="error",
         )
 
@@ -144,14 +159,17 @@ async def chat_with_video(req: ChatRequest, user: dict | None = Depends(get_opti
         else:
             subtitle_text = req.subtitle_text
 
-        summarizer = _get_summarizer()
+        summarizer = _create_summarizer(req.model)
         for token in summarizer.chat_stream(subtitle_text, req.question):
             yield ServerSentEvent(raw_data=json.dumps(token, ensure_ascii=False), event="answer")
 
         yield ServerSentEvent(raw_data="[DONE]", event="done")
 
     except Exception as e:
+        err_msg = str(e)
+        if "Connection" in err_msg or "Connect" in err_msg or "Timeout" in err_msg:
+            err_msg = "大模型 API 网络调用不稳定，请稍后再试"
         yield ServerSentEvent(
-            raw_data=json.dumps({"message": f"回答失败: {str(e)}"}, ensure_ascii=False),
+            raw_data=json.dumps({"message": f"回答失败: {err_msg}"}, ensure_ascii=False),
             event="error",
         )

@@ -1,25 +1,43 @@
 <template>
   <div class="bg-white rounded-2xl border border-border shadow-lg overflow-hidden h-full flex flex-col">
         <!-- 标签页导航 -->
-        <div class="flex border-b border-border-light">
-          <button
-            v-for="tab in tabs"
-            :key="tab.key"
-            @click="activeTab = tab.key"
-            :class="[
-              'flex items-center gap-2 px-5 py-3.5 text-sm font-medium transition-all relative cursor-pointer',
-              activeTab === tab.key
-                ? 'text-primary'
-                : 'text-text-secondary hover:text-text-primary'
-            ]"
-          >
-            <span>{{ tab.icon }}</span>
-            <span>{{ tab.label }}</span>
-            <div
-              v-if="activeTab === tab.key"
-              class="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
-            ></div>
-          </button>
+        <div class="flex border-b border-border-light justify-between items-center">
+          <div class="flex">
+            <button
+              v-for="tab in tabs"
+              :key="tab.key"
+              @click="activeTab = tab.key"
+              :class="[
+                'flex items-center gap-2 px-5 py-3.5 text-sm font-medium transition-all relative cursor-pointer',
+                activeTab === tab.key
+                  ? 'text-primary'
+                  : 'text-text-secondary hover:text-text-primary'
+              ]"
+            >
+              <span>{{ tab.icon }}</span>
+              <span>{{ tab.label }}</span>
+              <div
+                v-if="activeTab === tab.key"
+                class="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
+              ></div>
+            </button>
+          </div>
+          <!-- 模型选择器 -->
+          <div v-if="availableModels.length > 0" class="flex items-center gap-2 pr-4">
+            <span class="text-xs text-text-muted whitespace-nowrap">AI 模型:</span>
+            <select
+              v-model="selectedModel"
+              class="text-xs border border-border rounded-lg px-3 py-1.5 bg-white text-text-primary cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+            >
+              <option
+                v-for="m in availableModels"
+                :key="m.key"
+                :value="m.key"
+              >
+                {{ m.name }}
+              </option>
+            </select>
+          </div>
         </div>
 
         <!-- 内容区域 -->
@@ -277,7 +295,7 @@ import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import { Transformer } from 'markmap-lib'
 import { Markmap } from 'markmap-view'
-import { summarizeVideo, chatWithVideo } from '../api/summarize.js'
+import { summarizeVideo, chatWithVideo, fetchModels } from '../api/summarize.js'
 
 const props = defineProps({
   videoUrl: { type: String, required: true },
@@ -654,6 +672,22 @@ function handleClickOutside(e) {
 
 const quotaInfo = ref(null)
 
+// 模型选择
+const availableModels = ref([])
+const selectedModel = ref('')
+const defaultModel = ref('')
+
+async function loadModels() {
+  try {
+    const data = await fetchModels()
+    availableModels.value = data.models
+    defaultModel.value = data.default
+    if (!selectedModel.value) {
+      selectedModel.value = data.default
+    }
+  } catch { /* 静默降级，使用默认模型 */ }
+}
+
 async function startSummarize() {
   loading.value = true
   summaryText.value = ''
@@ -703,7 +737,7 @@ async function startSummarize() {
           alert('总结失败: ' + data)
         }
       },
-    })
+    }, selectedModel.value)
   } catch (err) {
     loading.value = false
     alert('总结请求失败: ' + err.message)
@@ -748,7 +782,8 @@ async function sendQuestion() {
             aiMessage.content = '❌ 回答失败'
           }
         },
-      }
+      },
+      selectedModel.value
     )
   } catch (err) {
     aiMessage.loading = false
@@ -766,6 +801,7 @@ function scrollChatToBottom() {
 }
 
 onMounted(() => {
+  loadModels()
   startSummarize()
   document.addEventListener('fullscreenchange', onFullscreenChange)
   document.addEventListener('webkitfullscreenchange', onFullscreenChange)
